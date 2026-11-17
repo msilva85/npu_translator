@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TranslateGemma 4B · FastFlowLM NPU</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --panel: #1e293b;
+      --border: #334155;
+      --text: #f1f5f9;
+      --muted: #94a3b8;
+      --accent: #38bdf8;
+      --accent-hover: #0284c7;
+      --ok: #22c55e;
+      --err: #ef4444;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    header {
+      padding: 1rem 2rem;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: #0b1120;
+    }
+    header h1 { font-size: 1.15rem; margin: 0; display: flex; align-items: center; gap: 0.6rem; }
+    .badge {
+      font-size: 0.75rem;
+      padding: 0.2rem 0.6rem;
+      border-radius: 999px;
+      background: #1e293b;
+      border: 1px solid var(--border);
+      color: var(--accent);
+    }
+    .status { font-size: 0.85rem; display: flex; align-items: center; gap: 0.4rem; color: var(--muted); }
+    .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--ok); }
+    .dot.offline { background: var(--err); }
+    main {
+      max-width: 1200px;
+      width: 100%;
+      margin: 2rem auto;
+      padding: 0 1.5rem;
+      flex: 1;
+    }
+    .controls {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      gap: 0.75rem;
+      align-items: center;
+      margin-bottom: 1rem;
+    }
+    select, button {
+      background: var(--panel);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.65rem 0.9rem;
+      font-size: 0.95rem;
+      outline: none;
+    }
+    select:focus { border-color: var(--accent); }
+    button { cursor: pointer; transition: 0.15s; font-weight: 500; }
+    button:hover { border-color: var(--accent); }
+    .swap-btn { padding: 0.65rem 1rem; font-size: 1.1rem; }
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+    }
+    @media (max-width: 768px) { .grid { grid-template-columns: 1fr; } }
+    .box {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      display: flex;
+      flex-direction: column;
+      min-height: 320px;
+    }
+    textarea, .output {
+      flex: 1;
+      width: 100%;
+      background: transparent;
+      border: none;
+      color: var(--text);
+      padding: 1.1rem;
+      font-size: 1.05rem;
+      line-height: 1.6;
+      resize: vertical;
+      outline: none;
+      font-family: inherit;
+    }
+    .output { white-space: pre-wrap; overflow-y: auto; }
+    .box-footer {
+      padding: 0.65rem 1rem;
+      border-top: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 0.8rem;
+      color: var(--muted);
+    }
+    .primary-btn {
+      background: var(--accent);
+      color: #0f172a;
+      border: none;
+      font-weight: 600;
+      padding: 0.65rem 1.4rem;
+    }
+    .primary-btn:hover { background: var(--accent-hover); color: #fff; }
+    .primary-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>TranslateGemma Portal <span class="badge" id="model-badge">translategemma:4b · NPU</span></h1>
+    <div class="status"><span class="dot" id="status-dot"></span><span id="status-text">Conectado a FLM</span></div>
+  </header>
+
+  <main>
+    <div class="controls">
+      <select id="src-lang" aria-label="Idioma origen"></select>
+      <button class="swap-btn" id="swap-btn" title="Intercambiar idiomas">⇄</button>
+      <select id="tgt-lang" aria-label="Idioma destino"></select>
+    </div>
+
+    <div class="grid">
+      <div class="box">
+        <textarea id="input-text" placeholder="Escribe o pega el texto a traducir... (Ctrl + Enter para traducir)"></textarea>
+        <div class="box-footer">
+          <span id="char-count">0 caracteres</span>
+          <div style="display:flex; gap:0.5rem;">
+            <button id="clear-btn" type="button">Limpiar</button>
+            <button id="translate-btn" class="primary-btn" type="button">Traducir</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="box">
+        <div class="output" id="output-text"></div>
+        <div class="box-footer">
+          <span id="perf-stats">Listo</span>
+          <button id="copy-btn" type="button">Copiar</button>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    const srcSelect = document.getElementById("src-lang");
+    const tgtSelect = document.getElementById("tgt-lang");
+    const inputText = document.getElementById("input-text");
+    const outputText = document.getElementById("output-text");
+    const translateBtn = document.getElementById("translate-btn");
+    const perfStats = document.getElementById("perf-stats");
+
+    async function init() {
+      const res = await fetch("/api/languages");
+      const data = await res.json();
+      document.getElementById("model-badge").textContent = `${data.model} · FastFlowLM`;
+
+      data.languages.forEach(lang => {
+        srcSelect.add(new Option(lang.label, lang.code));
+        tgtSelect.add(new Option(lang.label, lang.code));
+      });
+
+      srcSelect.value = "en";
+      tgtSelect.value = "es";
+    }
+
+    async function translate() {
+      const text = inputText.value.trim();
+      if (!text) return;
+
+      translateBtn.disabled = true;
+      outputText.textContent = "";
+      perfStats.textContent = "Inferencia en NPU...";
+      const t0 = performance.now();
+      let chunks = 0;
+
+      try {
+        const response = await fetch("/api/translate/stream", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            text,
+            source_code: srcSelect.value,
+            target_code: tgtSelect.value,
+          }),
+        });
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+
+          const lines = buffer.split("\n\n");
+          buffer = lines.pop();
+
+          for (const line of lines) {
+            if (!line.startsWith("data: ")) continue;
+            const payload = line.slice(6);
+            if (payload === "[DONE]") break;
+
+            const parsed = JSON.parse(payload);
+            if (parsed.error) {
+              outputText.textContent = `Error: ${parsed.error}`;
+              break;
+            }
+            if (parsed.token) {
+              outputText.textContent += parsed.token;
+              chunks++;
+            }
+          }
+        }
+
+        const elapsed = ((performance.now() - t0) / 1000).toFixed(2);
+        const tps = elapsed > 0 ? (chunks / elapsed).toFixed(1) : "0";
+        perfStats.textContent = `Completado en ${elapsed}s (~${tps} tok/s)`;
+      } catch (err) {
+        outputText.textContent = `Error de red: ${err.message}`;
+        perfStats.textContent = "Error";
+      } finally {
+        translateBtn.disabled = false;
+      }
+    }
+
+    document.getElementById("swap-btn").addEventListener("click", () => {
+      const tmp = srcSelect.value;
+      srcSelect.value = tgtSelect.value;
+      tgtSelect.value = tmp;
+      if (outputText.textContent.trim()) {
+        inputText.value = outputText.textContent;
+        outputText.textContent = "";
+      }
+    });
+
+    document.getElementById("clear-btn").addEventListener("click", () => {
+      inputText.value = "";
+      outputText.textContent = "";
+      document.getElementById("char-count").textContent = "0 caracteres";
+      perfStats.textContent = "Listo";
+    });
+
+    document.getElementById("copy-btn").addEventListener("click", async () => {
+      if (!outputText.textContent) return;
+      await navigator.clipboard.writeText(outputText.textContent);
+      const btn = document.getElementById("copy-btn");
+      btn.textContent = "Copiado";
+      setTimeout(() => (btn.textContent = "Copiar"), 1500);
+    });
+
+    inputText.addEventListener("input", () => {
+      document.getElementById("char-count").textContent = `${inputText.value.length} caracteres`;
+    });
+
+    inputText.addEventListener("keydown", (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "Enter") translate();
+    });
+
+    translateBtn.addEventListener("click", translate);
+    init();
+  </script>
+</body>
+</html>
